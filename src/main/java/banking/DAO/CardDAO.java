@@ -1,18 +1,23 @@
 package banking.DAO;
 
 import banking.entity.Card;
-import banking.entity.Log;
 import banking.service.CardServiceImpl;
 import banking.util.SQLiteManager;
+import banking.util.SqlWrapper;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.SQLException;
-import java.sql.Savepoint;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-public class CardDAO { // responsibility: interaction with DB
+public class CardDAO {
+    public static final String SQL_DELETE_CARD_BY_NUMBER = "DELETE FROM card WHERE number = ?";
+    public static final String SQL_SELECT_CARD_BY_CARD_NUMBER = "SELECT * FROM Card WHERE number = ?";
+    public static final String SQL_SELECT_CARD_NUMBER_BY_ACCOUNT_NUMBER = "SELECT number FROM card WHERE number LIKE ?";
+    public static final String SQL_INSERT_NEW_CARD = "INSERT INTO card (number, pin, balance) VALUES (?, ?, ?);";
+    public static final String SQL_SET_CARD_FIELDS = "UPDATE card SET pin = ?, balance = ? WHERE number = ? ;";
+    public static final String SQL_DECREASE_SENDER_BALANCE = "UPDATE card SET balance = balance - ? WHERE number = ?";
+    public static final String SQL_INCREASE_RECIPIENT_BALANCE = "UPDATE card SET balance = balance + ? WHERE number = ?";
+
     public CardDAO() {
     }
 
@@ -20,9 +25,13 @@ public class CardDAO { // responsibility: interaction with DB
         boolean accountNumberIsUnique = false;
         String pattern = CardServiceImpl.CARD_BIN + accountNumber + "%";
 
-        String sql = "SELECT number FROM card WHERE number LIKE \"" + pattern + "\"";
+        Map<Integer, Object> sqlArgsByIndex = new HashMap<>();
+        sqlArgsByIndex.put(1, pattern);
 
-        List<Map<String, Object>> records = SQLiteManager.executeQuery(sql);
+        SqlWrapper sqlWrapper = new SqlWrapper(SQL_SELECT_CARD_NUMBER_BY_ACCOUNT_NUMBER, sqlArgsByIndex);
+
+        List<Map<String, Object>> records = SQLiteManager.executeSelectQuery(sqlWrapper);
+
 
         if (records.size() == 0) { // if account number doesn't exist in DB, then it's unique
             return true;
@@ -32,70 +41,37 @@ public class CardDAO { // responsibility: interaction with DB
     }
 
     public void updateCard(Card card) {
-        String sql = "UPDATE card " +
-                "SET pin = ?, balance = ? " +
-                "WHERE number = ? " +
-                ";";
+        Map<Integer, Object> sqlArgsByIndex = new HashMap<>();
+        sqlArgsByIndex.put(1, card.getPinCode());
+        sqlArgsByIndex.put(2, card.getBalance());
+        sqlArgsByIndex.put(3, card.getCardNumber());
 
-        Connection connection = SQLiteManager.getConnectionInstance();
+        SqlWrapper sqlWrapper = new SqlWrapper(SQL_SET_CARD_FIELDS, sqlArgsByIndex);
 
-        try {
-            PreparedStatement statement = connection.prepareStatement(sql);
-
-            try {
-                statement.setString(1, card.getPinCode());
-                statement.setInt(2, card.getBalance());
-                statement.setString(3, card.getCardNumber());
-
-                statement.executeUpdate();
-            } catch (Exception e) {
-                new Log("Error executing sql statement: " + sql, e);
-            } finally {
-                try {
-                    connection.close();
-                } catch (SQLException e) {
-                    new Log("Error closing connection to DB", e);
-                }
-            }
-        } catch (SQLException e) {
-            new Log ("Error establishing connection", e);
-        }
-
+        SQLiteManager.executeUpdate(sqlWrapper);
     }
 
     public void insertCard(Card card) {
-        String sql = "INSERT INTO card (number, pin, balance) " +
-                "VALUES (?, ?, ?);";
+        Map<Integer, Object> sqlArgsByIndex = new HashMap<>();
 
-        Connection connection = SQLiteManager.getConnectionInstance();
+        sqlArgsByIndex.put(1, card.getCardNumber());
+        sqlArgsByIndex.put(2, card.getPinCode());
+        sqlArgsByIndex.put(3, card.getBalance());
 
-        try {
-            PreparedStatement statement = connection.prepareStatement(sql);
+        SqlWrapper sqlWrapper = new SqlWrapper(SQL_INSERT_NEW_CARD, sqlArgsByIndex);
 
-            try {
-                statement.setString(1, card.getCardNumber());
-                statement.setString(2, card.getPinCode());
-                statement.setInt(3, card.getBalance());
+        SQLiteManager.executeUpdate(sqlWrapper);
 
-                statement.executeUpdate();
-            } catch (Exception e) {
-                new Log("Error executing sql statement: " + sql, e);
-            } finally {
-                try {
-                    connection.close();
-                } catch (SQLException e) {
-                    new Log("Error closing connection to DB", e);
-                }
-            }
-        } catch (SQLException e) {
-            new Log ("Error establishing connection", e);
-        }
     }
 
-    private void deleteCard(Card card) {
-        String cardNumber = card.getCardNumber();
-        String sql = "DELETE FROM card WHERE number = \"" + cardNumber + "\"";
-        SQLiteManager.executeUpdate(sql);
+    public void deleteCard(Card card) {
+        Map<Integer, Object> sqlArgsByIndex = new HashMap<>();
+
+        sqlArgsByIndex.put(1, card.getCardNumber());
+
+        SqlWrapper sqlWrapper = new SqlWrapper(SQL_DELETE_CARD_BY_NUMBER, sqlArgsByIndex);
+
+        SQLiteManager.executeUpdate(sqlWrapper);
     }
 
     public void closeCardByCardNumber(String cardNumber) {
@@ -105,36 +81,28 @@ public class CardDAO { // responsibility: interaction with DB
 
 
     public Card getCard(String cardNumber) {
-        Card card = null;
 
-        String sql = "SELECT * FROM Card WHERE number = " + "\"" + cardNumber + "\"";
-        List<Map<String, Object>> cards = SQLiteManager.executeQuery(sql);
+        Map<Integer, Object> sqlArgsByIndex = new HashMap<>();
+        sqlArgsByIndex.put(1, cardNumber);
 
-        Map<String, Object> cardFields;
-        if (cards.size() > 0) {
-            cardFields = cards.get(0);
-        } else {
-            return card;
+        SqlWrapper sqlWrapper = new SqlWrapper(SQL_SELECT_CARD_BY_CARD_NUMBER, sqlArgsByIndex);
+
+        List<Map<String, Object>> records = SQLiteManager.executeSelectQuery(sqlWrapper);
+
+        if (records.isEmpty()) {
+            return null;
         }
 
-        String pinCode = null;
-        Integer balance = null;
+        Map<String, Object> cardFields = records.get(0);
 
-        for (String fieldName : cardFields.keySet()) {
-            if (fieldName.equals("pin")) {
-                pinCode = (String) cardFields.get(fieldName);
-            }
-
-            if (fieldName.equals("balance")) {
-                balance = (Integer) cardFields.get(fieldName);
-            }
-        }
+        String pinCode = (String) cardFields.get("pin");
+        Integer balance = (Integer) cardFields.get("balance");
 
         if (cardNumber != null && pinCode != null && balance != null) {
-            card = new Card(cardNumber, pinCode, balance);
+            return new Card(cardNumber, pinCode, balance);
         }
 
-        return card;
+        return null;
     }
 
     public void addIncome(Card card) {
@@ -143,47 +111,20 @@ public class CardDAO { // responsibility: interaction with DB
 
     public void doTransfer(String senderCardNumber, String recipientCardNumber, int amount) {
 
-        String sqlDecreaseSenderBalance = "UPDATE card SET balance = balance - ? WHERE number = ?";
-        String sqlIncreaseRecipientBalance = "UPDATE card SET balance = balance + ? WHERE number = ?";
+        Map<Integer, Object> sqlArgsByIndexDecreaseSender = new HashMap<>();
+        sqlArgsByIndexDecreaseSender.put(1, amount);
+        sqlArgsByIndexDecreaseSender.put(2, senderCardNumber);
+
+        SqlWrapper sqlWrapperDecreaseSender = new SqlWrapper(SQL_DECREASE_SENDER_BALANCE, sqlArgsByIndexDecreaseSender);
 
 
-        Connection connection = SQLiteManager.getConnectionInstance();
+        Map<Integer, Object> sqlArgsByIndexIncreaseRecipient = new HashMap<>();
+        sqlArgsByIndexIncreaseRecipient.put(1, amount);
+        sqlArgsByIndexIncreaseRecipient.put(2, recipientCardNumber);
 
-        try {
-            connection.setAutoCommit(false);
-            Savepoint savepoint = connection.setSavepoint();
-
-            try {
-                PreparedStatement stDecreaseSender = connection.prepareStatement(sqlDecreaseSenderBalance);
-                stDecreaseSender.setInt(1, amount);
-                stDecreaseSender.setString(2, senderCardNumber);
+        SqlWrapper sqlWrapperIncreaseRecipient = new SqlWrapper(SQL_INCREASE_RECIPIENT_BALANCE, sqlArgsByIndexIncreaseRecipient);
 
 
-                PreparedStatement stIncreaseRecipient = connection.prepareStatement(sqlIncreaseRecipientBalance);
-                stIncreaseRecipient.setInt(1, amount);
-                stIncreaseRecipient.setString(2, recipientCardNumber);
-
-                stIncreaseRecipient.executeUpdate();
-                stDecreaseSender.executeUpdate();
-
-                connection.commit();
-
-            } catch (Exception e) {
-                new Log("Failed to execute sql statement" , e);
-                try {
-                    connection.rollback(savepoint);
-                } catch (SQLException ex) {
-                    new Log("Failed to rollback" , e);
-                }
-            } finally {
-                try {
-                    connection.close();
-                } catch (SQLException e) {
-                    new Log("Error closing connection to DB", e);
-                }
-            }
-        } catch (SQLException e) {
-            new Log("Failed to executeUpdateAsTransaction", e);
-        }
+        SQLiteManager.executeUpdateAsTransaction(List.of(sqlWrapperIncreaseRecipient, sqlWrapperDecreaseSender));
     }
 }

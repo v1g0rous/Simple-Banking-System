@@ -10,7 +10,7 @@ import java.util.List;
 import java.util.Map;
 
 public class SQLiteManager implements DatabaseManager {
-    static String databaseName;
+    private static String databaseName;
     private static Connection connection;
     public static final String CREATE_CARD_TABLE_SQL = "CREATE TABLE IF NOT EXISTS card(" +
             "id INTEGER PRIMARY KEY AUTOINCREMENT," +
@@ -23,14 +23,28 @@ public class SQLiteManager implements DatabaseManager {
     }
 
     private void initDatabaseWithTable() {
-        executeUpdate(CREATE_CARD_TABLE_SQL);
+
+        Connection connection = getConnectionInstance();
+
+        try {
+            PreparedStatement statement = connection.prepareStatement(CREATE_CARD_TABLE_SQL);
+            statement.executeUpdate();
+        } catch (Exception e) {
+            new Log("Error executing sql statement: " + CREATE_CARD_TABLE_SQL, e);
+        } finally {
+            try {
+                connection.close();
+            } catch (SQLException e) {
+                new Log("Error closing connection to DB" + databaseName, e);
+            }
+        }
     }
 
     public static Connection getConnectionInstance() {
         return getConnectionInstance(databaseName);
     }
 
-    public static Connection getConnectionInstance(String fileName) {
+    private static Connection getConnectionInstance(String fileName) {
         try {
             if (connection != null && !connection.isClosed()) {
                 return connection;
@@ -50,16 +64,17 @@ public class SQLiteManager implements DatabaseManager {
     }
 
 
-    // regular JDBC statement
-    public static int executeUpdate(String sql) {
-        Connection connection = getConnectionInstance(databaseName);
+    public static int executeUpdate(SqlWrapper sqlWrapper) {
+        Connection connection = getConnectionInstance();
         int updatedRecords = 0;
 
         try {
-            PreparedStatement statement = connection.prepareStatement(sql);
+            PreparedStatement statement = connection.prepareStatement(sqlWrapper.getSql());
+            SQLiteManager.setSqlArguments(statement, sqlWrapper.getSqlArgsByIndex());
+
             updatedRecords = statement.executeUpdate();
         } catch (Exception e) {
-            new Log("Error executing sql statement: " + sql, e);
+            new Log("Error executing sql statement: " + sqlWrapper.getSql(), e);
         } finally {
             try {
                 connection.close();
@@ -71,40 +86,43 @@ public class SQLiteManager implements DatabaseManager {
         return updatedRecords;
     }
 
-    public static int executeUpdateAsTransaction(String sql, Connection connection) {
+    // connection remains open till caller closes it when transaction is over
+    private static int executeUpdateAsTransaction(Connection connection, SqlWrapper sqlWrapper) {
         int updatedRecords = 0;
 
         try {
-            PreparedStatement statement = connection.prepareStatement(sql);
+            PreparedStatement statement = connection.prepareStatement(sqlWrapper.getSql());
+            SQLiteManager.setSqlArguments(statement, sqlWrapper.getSqlArgsByIndex());
+
             updatedRecords = statement.executeUpdate();
         } catch (Exception e) {
-            new Log("Error executing sql statement: " + sql, e);
+            new Log("Error executing sql statement: " + sqlWrapper.getSql(), e);
         }
+
         return updatedRecords;
     }
 
 
-    public static int executeUpdateAsTransaction(List<String> sqls) {
+    public static int executeUpdateAsTransaction(List<SqlWrapper> sqlWrappers) {
         Connection connection = getConnectionInstance();
         int updatedRecords = 0;
-
 
         try {
             connection.setAutoCommit(false);
             Savepoint savepoint = connection.setSavepoint();
 
             try {
-                for (String sql : sqls) {
-                   updatedRecords += SQLiteManager.executeUpdateAsTransaction(sql, connection);
+                for (SqlWrapper sqlWrapper : sqlWrappers) {
+                    updatedRecords += SQLiteManager.executeUpdateAsTransaction(connection, sqlWrapper);
                 }
                 connection.commit();
 
             } catch (Exception e) {
-                new Log("Failed to execute sql statement" , e);
+                new Log("Failed to execute sql statement", e);
                 try {
                     connection.rollback(savepoint);
                 } catch (SQLException ex) {
-                    new Log("Failed to rollback" , e);
+                    new Log("Failed to rollback", e);
                 }
             } finally {
                 try {
@@ -121,13 +139,28 @@ public class SQLiteManager implements DatabaseManager {
     }
 
 
-    public static List<Map<String, Object>> executeQuery(String sql) {
+    // sqlArgsByIndex contains settings for each ? placeholder in prepared JDBC statement
+    private static void setSqlArguments(PreparedStatement statement, Map<Integer, Object> sqlArgsByIndex) throws SQLException {
+        if (sqlArgsByIndex != null && sqlArgsByIndex.size() > 0) {
+            for (Integer argIndex : sqlArgsByIndex.keySet()) {
+                Object argValue = sqlArgsByIndex.get(argIndex);
+
+                statement.setObject(argIndex, argValue);
+            }
+        }
+    }
+
+    public static List<Map<String, Object>> executeSelectQuery(SqlWrapper sqlWrapper) {
         List<Map<String, Object>> records = new ArrayList<>();
 
-        try (Connection connection = getConnectionInstance(databaseName);
-             PreparedStatement statement = connection.prepareStatement(sql);
-             ResultSet recordsSet = statement.executeQuery();
-        ) {
+        Connection connection = getConnectionInstance();
+
+        try {
+            PreparedStatement statement = connection.prepareStatement(sqlWrapper.getSql());
+            SQLiteManager.setSqlArguments(statement, sqlWrapper.getSqlArgsByIndex());
+
+            ResultSet recordsSet = statement.executeQuery();
+
             ResultSetMetaData metaData = recordsSet.getMetaData();
             int columnCount = metaData.getColumnCount();
 
@@ -140,15 +173,21 @@ public class SQLiteManager implements DatabaseManager {
             }
 
         } catch (Exception e) {
-            new Log("Error executing sql statement: " + sql, e);
+            new Log("Error executing sql statement: " + sqlWrapper.getSql(), e);
             throw new RuntimeException(e);
+        } finally {
+            try {
+                connection.close();
+            } catch (SQLException e) {
+                new Log("Error closing connection to DB", e);
+            }
         }
 
         return records;
     }
 
 
-    public static String getDatabaseName(String[] args) {
+    private static String getDatabaseName(String[] args) {
         String name = "";
         for (int i = 0; i < args.length; i++) {
             if (args[i].equals("-fileName")) {
