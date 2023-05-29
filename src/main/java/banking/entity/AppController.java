@@ -31,7 +31,6 @@ public class AppController implements Controller {
     public static final String BYE = "Bye!";
     public static final String INVALID_CREDENTIALS = "Invalid login or password\n";
 
-    Session session;
     View view;
     App app;
     CardService cardService;
@@ -209,8 +208,8 @@ public class AppController implements Controller {
             Session userSession = view.getUserSession();
             String cardNumber = userSession.getAuthorizedCardNumber();
 
+            sessionService.logout(userSession);
             cardService.closeCard(cardNumber);
-            userSession.setUserIsAuthorized(false);
             view.showNotification(CARD_HAS_BEEN_CLOSED);
         } catch (Exception e) {
             new Log("Failed to close the card", e);
